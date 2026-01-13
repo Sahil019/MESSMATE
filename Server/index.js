@@ -49,7 +49,7 @@ async function initDatabase() {
     for (const statement of statements) {
       if (statement.trim()) {
         console.log('Executing:', statement.substring(0, 50) + '...');
-        await db.execute(statement);
+        await db.query(statement);
       }
     }
 
@@ -66,21 +66,21 @@ app.post("/api/auth/register", async (req, res) => {
   try {
     const { email, password, fullName, role, mobileNumber, totalAmount } = req.body;
 
-    const [[existing]] = await db.execute(
-      "SELECT id FROM users WHERE email = ?",
+    const { rows } = await db.query(
+      "SELECT id FROM users WHERE email = $1",
       [email]
     );
-    if (existing)
+    if (rows.length > 0)
       return res.status(409).json({ error: "User already exists" });
 
     const id = uuidv4();
     const passHash = await bcrypt.hash(password, 10);
 
-    await db.execute(
+    await db.query(
       `
       INSERT INTO users
       (id,email,password_hash,full_name,role,mobile_number,mess_status,total_amount,created_at,updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'paid', ?, NOW(), NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, 'paid', $7, NOW(), NOW())
       `,
       [id, email, passHash, fullName, role, mobileNumber || null, totalAmount || 0]
     );
@@ -111,9 +111,9 @@ app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       `SELECT id,email,password_hash,full_name,role
-       FROM users WHERE email = ?`,
+       FROM users WHERE email = $1`,
       [email]
     );
 
@@ -159,9 +159,9 @@ app.post("/api/auth/login", async (req, res) => {
 // AUTH /me
 app.get("/api/auth/me", authenticateToken, async (req, res) => {
   try {
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       `
-      SELECT 
+      SELECT
         id,
         email,
         full_name,
@@ -172,7 +172,7 @@ app.get("/api/auth/me", authenticateToken, async (req, res) => {
         package_amount,
         total_amount
       FROM users
-      WHERE id = ?
+      WHERE id = $1
       `,
       [req.user.id]
     );
@@ -197,12 +197,12 @@ app.get("/api/attendance", authenticateToken, async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
 
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       `
       SELECT meal_date, meal_type, status, is_locked
       FROM attendance_logs
-      WHERE user_id = ?
-      AND meal_date BETWEEN ? AND ?
+      WHERE user_id = $1
+      AND meal_date BETWEEN $2 AND $3
       ORDER BY meal_date ASC
       `,
       [req.user.id, startDate, endDate]
@@ -226,11 +226,11 @@ app.get("/api/attendance/day", authenticateToken, async (req, res) => {
 
     if (!date) return res.status(400).json({ error: "Date parameter required" });
 
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       `
       SELECT meal_type, status
       FROM attendance_logs
-      WHERE user_id = ? AND meal_date = ?
+      WHERE user_id = $1 AND meal_date = $2
       `,
       [req.user.id, date]
     );
@@ -270,33 +270,33 @@ app.get("/api/attendance/summary", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "Start and end dates required" });
 
     // Get attendance counts
-    const [attendanceRows] = await db.execute(
+    const { rows: attendanceRows } = await db.query(
       `
       SELECT
         SUM(CASE WHEN status IN ('will_attend', 'consumed') THEN 1 ELSE 0 END) as attended,
         SUM(CASE WHEN status IN ('skip', 'not_attended') THEN 1 ELSE 0 END) as skipped
       FROM attendance_logs
-      WHERE user_id = ? AND meal_date BETWEEN ? AND ?
+      WHERE user_id = $1 AND meal_date BETWEEN $2 AND $3
       `,
       [req.user.id, start, end]
     );
 
     // Get approved leave days count - optimized query
-    const [leaveRows] = await db.execute(
+    const { rows: leaveRows } = await db.query(
       `
-      SELECT COUNT(DISTINCT DATE(date_range.date)) as leave_days
+      SELECT COUNT(DISTINCT date_range.date) as leave_days
       FROM leave_requests lr
       CROSS JOIN (
-        SELECT DATE(?) + INTERVAL (t.n) DAY as date
+        SELECT $1::date + INTERVAL '1 day' * t.n as date
         FROM (
           SELECT a.n + b.n*10 + c.n*100 as n
           FROM (SELECT 0 as n UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9) a
           CROSS JOIN (SELECT 0 as n UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9) b
           CROSS JOIN (SELECT 0 as n UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9) c
         ) t
-        WHERE DATE(?) + INTERVAL (t.n) DAY <= DATE(?)
+        WHERE $2::date + INTERVAL '1 day' * t.n <= $3::date
       ) date_range
-      WHERE lr.user_id = ? AND lr.status = 'approved'
+      WHERE lr.user_id = $4 AND lr.status = 'approved'
       AND date_range.date BETWEEN lr.start_date AND lr.end_date
       `,
       [start, start, end, req.user.id]
@@ -307,14 +307,14 @@ app.get("/api/attendance/summary", authenticateToken, async (req, res) => {
     const onLeave = leaveRows[0]?.leave_days || 0;
 
     // Calculate estimated amount (only for consumed/will_attend meals)
-    const [amountRows] = await db.execute(
+    const { rows: amountRows } = await db.query(
       `
       SELECT
         SUM(CASE WHEN meal_type = 'breakfast' THEN 30 ELSE 0 END) as breakfast_amount,
         SUM(CASE WHEN meal_type = 'lunch' THEN 48 ELSE 0 END) as lunch_amount,
         SUM(CASE WHEN meal_type = 'dinner' THEN 42 ELSE 0 END) as dinner_amount
       FROM attendance_logs
-      WHERE user_id = ? AND meal_date BETWEEN ? AND ?
+      WHERE user_id = $1 AND meal_date BETWEEN $2 AND $3
       AND status IN ('will_attend', 'consumed')
       `,
       [req.user.id, start, end]
@@ -348,24 +348,24 @@ app.get("/api/billing/summary", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "Start and end dates required" });
 
     // Get attendance counts
-    const [attendanceRows] = await db.execute(
+    const { rows: attendanceRows } = await db.query(
       `
       SELECT
         SUM(CASE WHEN status IN ('will_attend', 'consumed') THEN 1 ELSE 0 END) as attended,
         SUM(CASE WHEN status IN ('skip', 'not_attended') THEN 1 ELSE 0 END) as skipped
       FROM attendance_logs
-      WHERE user_id = ? AND meal_date BETWEEN ? AND ?
+      WHERE user_id = $1 AND meal_date BETWEEN $2 AND $3
       `,
       [req.user.id, start, end]
     );
 
     // Get approved leave days count
-    const [leaveRows] = await db.execute(
+    const { rows: leaveRows } = await db.query(
       `
       SELECT COUNT(*) as leave_days
       FROM leave_requests
-      WHERE user_id = ? AND status = 'approved'
-      AND ((start_date BETWEEN ? AND ?) OR (end_date BETWEEN ? AND ?) OR (start_date <= ? AND end_date >= ?))
+      WHERE user_id = $1 AND status = 'approved'
+      AND ((start_date BETWEEN $2 AND $3) OR (end_date BETWEEN $4 AND $5) OR (start_date <= $6 AND end_date >= $7))
       `,
       [req.user.id, start, end, start, end, start, end]
     );
@@ -375,14 +375,14 @@ app.get("/api/billing/summary", authenticateToken, async (req, res) => {
     const leave = leaveRows[0]?.leave_days || 0;
 
     // Calculate estimated amount (only for consumed/will_attend meals)
-    const [amountRows] = await db.execute(
+    const { rows: amountRows } = await db.query(
       `
       SELECT
         SUM(CASE WHEN meal_type = 'breakfast' THEN 30 ELSE 0 END) as breakfast_amount,
         SUM(CASE WHEN meal_type = 'lunch' THEN 48 ELSE 0 END) as lunch_amount,
         SUM(CASE WHEN meal_type = 'dinner' THEN 42 ELSE 0 END) as dinner_amount
       FROM attendance_logs
-      WHERE user_id = ? AND meal_date BETWEEN ? AND ?
+      WHERE user_id = $1 AND meal_date BETWEEN $2 AND $3
       AND status IN ('will_attend', 'consumed')
       `,
       [req.user.id, start, end]
@@ -409,11 +409,11 @@ app.get("/api/billing/summary", authenticateToken, async (req, res) => {
 // ==================================================
 app.get("/api/billing/history", authenticateToken, async (req, res) => {
   try {
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       `
       SELECT billing_month, breakfast_count, lunch_count, dinner_count, total_meals, total_amount, is_paid
       FROM billing_records
-      WHERE user_id = ?
+      WHERE user_id = $1
       ORDER BY billing_month DESC
       `,
       [req.user.id]
@@ -453,41 +453,41 @@ app.post("/api/menu/select-package", authenticateToken, async (req, res) => {
     }
 
     // --- Ensure columns exist (safe + idempotent) ---
-    await db.execute(`
-      ALTER TABLE users 
+    await db.query(`
+      ALTER TABLE users
       ADD COLUMN IF NOT EXISTS selected_package VARCHAR(50) NULL
     `).catch(() => {});
 
-    await db.execute(`
-      ALTER TABLE users 
+    await db.query(`
+      ALTER TABLE users
       ADD COLUMN IF NOT EXISTS package_amount DECIMAL(10,2) DEFAULT 0
     `).catch(() => {});
 
-    await db.execute(`
-      ALTER TABLE users 
+    await db.query(`
+      ALTER TABLE users
       ADD COLUMN IF NOT EXISTS total_amount DECIMAL(10,2) DEFAULT 0
     `).catch(() => {});
 
     // --- Save package selection ---
-    await db.execute(
+    await db.query(
       `
       UPDATE users
-      SET selected_package = ?,
-          package_amount = ?,
-          total_amount = ?,
+      SET selected_package = $1,
+          package_amount = $2,
+          total_amount = $3,
           updated_at = NOW()
-      WHERE id = ?
+      WHERE id = $4
       `,
       [packageId, price, price, req.user.id]
     );
 
     // return updated user billing
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       `
       SELECT id, full_name, email,
              selected_package, package_amount, total_amount
       FROM users
-      WHERE id = ?
+      WHERE id = $1
       `,
       [req.user.id]
     );
@@ -514,11 +514,11 @@ app.get("/api/menu/selected-package", authenticateToken, async (req, res) => {
   try {
     // For now, we'll determine package based on total_amount
     // In production, you might want a separate column for selected_package
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       `
       SELECT total_amount
       FROM users
-      WHERE id = ?
+      WHERE id = $1
       `,
       [req.user.id]
     );
@@ -558,19 +558,20 @@ app.post("/api/attendance", authenticateToken, async (req, res) => {
     const uid = user_id || req.user.id;
 
     // Check previous status
-    const [oldRows] = await db.execute(
-      "SELECT status FROM attendance_logs WHERE user_id=? AND meal_date=? AND meal_type=?",
+    const { rows: oldRows } = await db.query(
+      "SELECT status FROM attendance_logs WHERE user_id=$1 AND meal_date=$2 AND meal_type=$3",
       [uid, meal_date, meal_type]
     );
     const oldStatus = oldRows.length ? oldRows[0].status : null;
 
     // Upsert attendance
-    await db.execute(
+    await db.query(
       `
       INSERT INTO attendance_logs (user_id, meal_date, meal_type, status)
-      VALUES (?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE
-        status = VALUES(status),
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (user_id, meal_date, meal_type)
+      DO UPDATE SET
+        status = EXCLUDED.status,
         updated_at = NOW()
       `,
       [uid, meal_date, meal_type, status]
@@ -581,27 +582,27 @@ app.post("/api/attendance", authenticateToken, async (req, res) => {
     // Only recalc when status changes
     if (oldStatus !== status) {
       // ensure billing record exists for that month
-      await db.execute(
+      await db.query(
         `
         INSERT INTO billing_records
           (user_id, billing_month, breakfast_count, lunch_count, dinner_count,
            total_meals, base_amount, meals_amount, total_amount, is_paid)
-        VALUES (?, DATE_FORMAT(?, '%Y-%m-01'), 0,0,0,0,0,0,0,0)
-
-        ON DUPLICATE KEY UPDATE user_id = user_id
+        VALUES ($1, $2, 0,0,0,0,0,0,0,0)
+        ON CONFLICT (user_id, billing_month)
+        DO NOTHING
         `,
-        [uid, meal_date]
+        [uid, billingDate]
       );
 
       // Recalculate counts from scratch for the month
-      const [billingRows] = await db.execute(
+      const { rows: billingRows } = await db.query(
         `
         SELECT
           SUM(CASE WHEN meal_type = 'breakfast' AND status IN ('will_attend', 'consumed') THEN 1 ELSE 0 END) as breakfast_count,
           SUM(CASE WHEN meal_type = 'lunch' AND status IN ('will_attend', 'consumed') THEN 1 ELSE 0 END) as lunch_count,
           SUM(CASE WHEN meal_type = 'dinner' AND status IN ('will_attend', 'consumed') THEN 1 ELSE 0 END) as dinner_count
         FROM attendance_logs
-        WHERE user_id = ? AND DATE_FORMAT(meal_date, '%Y-%m') = DATE_FORMAT(?, '%Y-%m')
+        WHERE user_id = $1 AND TO_CHAR(meal_date, 'YYYY-MM') = TO_CHAR($2::date, 'YYYY-MM')
         `,
         [uid, billingDate]
       );
@@ -611,17 +612,18 @@ app.post("/api/attendance", authenticateToken, async (req, res) => {
       const total_amount = (breakfast_count * 30) + (lunch_count * 48) + (dinner_count * 42);
 
       // Save monthly bill
-      await db.execute(
+      await db.query(
         `
         INSERT INTO billing_records
         (user_id,billing_month,breakfast_count,lunch_count,dinner_count,total_meals,total_amount)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE
-          breakfast_count = VALUES(breakfast_count),
-          lunch_count     = VALUES(lunch_count),
-          dinner_count    = VALUES(dinner_count),
-          total_meals     = VALUES(total_meals),
-          total_amount    = VALUES(total_amount),
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (user_id, billing_month)
+        DO UPDATE SET
+          breakfast_count = EXCLUDED.breakfast_count,
+          lunch_count     = EXCLUDED.lunch_count,
+          dinner_count    = EXCLUDED.dinner_count,
+          total_meals     = EXCLUDED.total_meals,
+          total_amount    = EXCLUDED.total_amount,
           updated_at      = NOW()
         `,
         [
@@ -653,7 +655,7 @@ app.get("/api/admin/users", authenticateToken, async (req, res) => {
     if (req.user.role !== "admin")
       return res.status(403).json({ error: "Admin access required" });
 
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       `
       SELECT id,email,full_name,role,mobile_number,mess_status,total_amount,created_at
       FROM users
@@ -686,23 +688,22 @@ app.put("/api/admin/users/:id", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "Email and full name are required" });
     }
 
-    // ✅ FIXED ENUM NORMALIZATION
+    // ✅ FIXED ENUM NORMALIZATION - removed invalid "not_paid" mapping
     let status = mess_status;
-    if (mess_status === "unpaid") status = "not_paid";
 
     const amount = Number(total_amount) || 0;
 
-    const [result] = await db.execute(
+    const result = await db.query(
       `
       UPDATE users
       SET
-        email = ?,
-        full_name = ?,
-        mobile_number = ?,
-        mess_status = ?,
-        total_amount = ?,
+        email = $1,
+        full_name = $2,
+        mobile_number = $3,
+        mess_status = $4,
+        total_amount = $5,
         updated_at = NOW()
-      WHERE id = ?
+      WHERE id = $6
       `,
       [
         email,
@@ -714,7 +715,7 @@ app.put("/api/admin/users/:id", authenticateToken, async (req, res) => {
       ]
     );
 
-    if (result.affectedRows === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: "User not found" });
     }
 
@@ -740,18 +741,18 @@ app.delete("/api/admin/users/:id", authenticateToken, async (req, res) => {
     const { id } = req.params;
 
     // Check if user exists
-    const [userRows] = await db.execute("SELECT id FROM users WHERE id = ?", [id]);
+    const { rows: userRows } = await db.query("SELECT id FROM users WHERE id = $1", [id]);
     if (userRows.length === 0) {
       return res.status(404).json({ error: "User not found" });
     }
 
     // Delete related records first (attendance, billing, leave requests)
-    await db.execute("DELETE FROM attendance_logs WHERE user_id = ?", [id]);
-    await db.execute("DELETE FROM billing_records WHERE user_id = ?", [id]);
-    await db.execute("DELETE FROM leave_requests WHERE user_id = ?", [id]);
+    await db.query("DELETE FROM attendance_logs WHERE user_id = $1", [id]);
+    await db.query("DELETE FROM billing_records WHERE user_id = $1", [id]);
+    await db.query("DELETE FROM leave_requests WHERE user_id = $1", [id]);
 
     // Delete the user
-    await db.execute("DELETE FROM users WHERE id = ?", [id]);
+    await db.query("DELETE FROM users WHERE id = $1", [id]);
 
     res.json({ success: true });
 
@@ -770,7 +771,7 @@ app.get("/api/admin/billing", authenticateToken, async (req, res) => {
     if (req.user.role !== "admin")
       return res.status(403).json({ error: "Admin access required" });
 
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       `
       SELECT b.id,b.user_id,u.full_name,b.billing_month,
              b.breakfast_count,b.lunch_count,b.dinner_count,
@@ -800,7 +801,7 @@ app.get("/api/admin/billing/summary", authenticateToken, async (req, res) => {
     const { date } = req.query;
     const dateKey = date || new Date().toISOString().slice(0, 10); // Default to current date if not provided
 
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       `
       SELECT
         u.id AS user_id,
@@ -816,12 +817,12 @@ app.get("/api/admin/billing/summary", authenticateToken, async (req, res) => {
         COALESCE(b.total_amount,0) AS total_amount,
         COALESCE(b.is_paid,0) AS is_paid,
 
-        ? AS billing_date
+        $1 AS billing_date
 
       FROM users u
       LEFT JOIN billing_records b
         ON b.user_id = u.id
-        AND DATE_FORMAT(b.billing_month,'%Y-%m') = DATE_FORMAT(?, '%Y-%m')
+        AND TO_CHAR(b.billing_month, 'YYYY-MM') = TO_CHAR($2, 'YYYY-MM')
 
       WHERE u.role = 'student'
       ORDER BY u.full_name ASC
@@ -851,11 +852,11 @@ app.post("/api/admin/billing/update-payment", authenticateToken, async (req, res
       return res.status(400).json({ error: "user_id, billing_date, and is_paid are required" });
 
     // Update the payment status
-    await db.execute(
+    await db.query(
       `
       UPDATE billing_records
-      SET is_paid = ?, updated_at = NOW()
-      WHERE user_id = ? AND DATE_FORMAT(billing_month, '%Y-%m') = DATE_FORMAT(?, '%Y-%m')
+      SET is_paid = $1, updated_at = NOW()
+      WHERE user_id = $2 AND TO_CHAR(billing_month, 'YYYY-MM') = TO_CHAR($3, 'YYYY-MM')
       `,
       [is_paid, user_id, billing_date]
     );
@@ -880,11 +881,11 @@ app.get("/api/admin/reports/daily", authenticateToken, async (req, res) => {
     if (!date) return res.status(400).json({ error: "Date parameter required" });
 
     // Get attendance data for the date
-    const [attendanceRows] = await db.execute(
+    const { rows: attendanceRows } = await db.query(
       `
       SELECT meal_type, status, COUNT(*) as count
       FROM attendance_logs
-      WHERE meal_date = ?
+      WHERE meal_date = $1
       GROUP BY meal_type, status
       `,
       [date]
@@ -909,7 +910,7 @@ app.get("/api/admin/reports/daily", authenticateToken, async (req, res) => {
     }));
 
     // Get billing summary for the date
-    const [billingRows] = await db.execute(
+    const { rows: billingRows } = await db.query(
       `
       SELECT
         COUNT(u.id) as total_students,
@@ -919,7 +920,7 @@ app.get("/api/admin/reports/daily", authenticateToken, async (req, res) => {
       FROM users u
       LEFT JOIN billing_records b
         ON b.user_id = u.id
-        AND DATE_FORMAT(b.billing_month, '%Y-%m') = DATE_FORMAT(?, '%Y-%m')
+        AND TO_CHAR(b.billing_month, 'YYYY-MM') = TO_CHAR($1, 'YYYY-MM')
       WHERE u.role = 'student'
       `,
       [date]
@@ -928,12 +929,12 @@ app.get("/api/admin/reports/daily", authenticateToken, async (req, res) => {
     const billing = billingRows[0] || { total_students: 0, total_meals: 0, total_amount: 0, paid_count: 0 };
 
     // Get leave count for the date
-    const [leaveRows] = await db.execute(
+    const { rows: leaveRows } = await db.query(
       `
       SELECT COUNT(*) as leaves
       FROM leave_requests
       WHERE status = 'approved'
-      AND ? BETWEEN start_date AND end_date
+      AND $1 BETWEEN start_date AND end_date
       `,
       [date]
     );
@@ -963,11 +964,11 @@ app.get("/api/leave", authenticateToken, async (req, res) => {
     const { user_id } = req.query;
     const uid = user_id || req.user.id;
 
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       `
       SELECT id, user_id, start_date, end_date, reason, status, created_at
       FROM leave_requests
-      WHERE user_id = ?
+      WHERE user_id = $1
       ORDER BY created_at DESC
       `,
       [uid]
@@ -994,10 +995,10 @@ app.post("/api/leave", authenticateToken, async (req, res) => {
 
     const id = uuidv4();
 
-    await db.execute(
+    await db.query(
       `
       INSERT INTO leave_requests (id, user_id, start_date, end_date, reason)
-      VALUES (?, ?, ?, ?, ?)
+      VALUES ($1, $2, $3, $4, $5)
       `,
       [id, uid, start_date, end_date, reason || null]
     );
@@ -1018,7 +1019,7 @@ app.get("/api/admin/leaves", authenticateToken, async (req, res) => {
     if (req.user.role !== "admin")
       return res.status(403).json({ error: "Admin access required" });
 
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       `
       SELECT lr.id, lr.user_id, u.full_name, u.email, lr.start_date, lr.end_date, lr.reason, lr.status, lr.created_at
       FROM leave_requests lr
@@ -1050,19 +1051,19 @@ app.post("/api/admin/leaves/:id/status", authenticateToken, async (req, res) => 
       return res.status(400).json({ error: "Status must be 'approved' or 'reject'" });
 
     // Update leave status
-    await db.execute(
+    await db.query(
       `
       UPDATE leave_requests
-      SET status = ?, updated_at = NOW()
-      WHERE id = ?
+      SET status = $1, updated_at = NOW()
+      WHERE id = $2
       `,
       [status, id]
     );
 
     // If approved, mark attendance as not_attended for the leave period
     if (status === 'approved') {
-      const [leaveRows] = await db.execute(
-        "SELECT user_id, start_date, end_date FROM leave_requests WHERE id = ?",
+      const { rows: leaveRows } = await db.query(
+        "SELECT user_id, start_date, end_date FROM leave_requests WHERE id = $1",
         [id]
       );
 
@@ -1078,12 +1079,13 @@ app.post("/api/admin/leaves/:id/status", authenticateToken, async (req, res) => 
           // For each meal type, set status to 'not_attended'
           const mealTypes = ['breakfast', 'lunch', 'dinner'];
           for (const mealType of mealTypes) {
-            await db.execute(
+            await db.query(
               `
               INSERT INTO attendance_logs (user_id, meal_date, meal_type, status)
-              VALUES (?, ?, ?, 'not_attended')
-              ON DUPLICATE KEY UPDATE
-                status = 'not_attended',
+              VALUES ($1, $2, $3, 'not_attended')
+              ON CONFLICT (user_id, meal_date, meal_type)
+              DO UPDATE SET
+                status = EXCLUDED.status,
                 updated_at = NOW()
               `,
               [user_id, mealDate, mealType]
@@ -1100,14 +1102,14 @@ app.post("/api/admin/leaves/:id/status", authenticateToken, async (req, res) => 
 
         for (const billingMonth of billingMonths) {
           // Recalc logic similar to attendance POST
-          const [billingRows] = await db.execute(
+          const { rows: billingRows } = await db.query(
             `
             SELECT
               SUM(CASE WHEN meal_type = 'breakfast' AND status IN ('will_attend', 'consumed') THEN 1 ELSE 0 END) as breakfast_count,
               SUM(CASE WHEN meal_type = 'lunch' AND status IN ('will_attend', 'consumed') THEN 1 ELSE 0 END) as lunch_count,
               SUM(CASE WHEN meal_type = 'dinner' AND status IN ('will_attend', 'consumed') THEN 1 ELSE 0 END) as dinner_count
             FROM attendance_logs
-            WHERE user_id = ? AND DATE_FORMAT(meal_date, '%Y-%m') = DATE_FORMAT(?, '%Y-%m')
+            WHERE user_id = $1 AND TO_CHAR(meal_date, 'YYYY-MM') = TO_CHAR($2::date, 'YYYY-MM')
             `,
             [user_id, billingMonth]
           );
@@ -1116,17 +1118,18 @@ app.post("/api/admin/leaves/:id/status", authenticateToken, async (req, res) => 
           const total_meals = breakfast_count + lunch_count + dinner_count;
           const total_amount = (breakfast_count * 30) + (lunch_count * 48) + (dinner_count * 42);
 
-          await db.execute(
+          await db.query(
             `
             INSERT INTO billing_records
             (user_id, billing_month, breakfast_count, lunch_count, dinner_count, total_meals, total_amount)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE
-              breakfast_count = VALUES(breakfast_count),
-              lunch_count = VALUES(lunch_count),
-              dinner_count = VALUES(dinner_count),
-              total_meals = VALUES(total_meals),
-              total_amount = VALUES(total_amount),
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (user_id, billing_month)
+            DO UPDATE SET
+              breakfast_count = EXCLUDED.breakfast_count,
+              lunch_count = EXCLUDED.lunch_count,
+              dinner_count = EXCLUDED.dinner_count,
+              total_meals = EXCLUDED.total_meals,
+              total_amount = EXCLUDED.total_amount,
               updated_at = NOW()
             `,
             [user_id, billingMonth, breakfast_count, lunch_count, dinner_count, total_meals, total_amount]
@@ -1153,7 +1156,7 @@ app.get("/api/admin/payment/qr", authenticateToken, async (req, res) => {
     }
 
     // Fetch QR code path from database
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       "SELECT qr_code_path, upi_id, upi_name FROM payment_settings WHERE id = 1"
     );
 
@@ -1186,9 +1189,9 @@ app.post("/api/admin/payment/qr", authenticateToken, upload.single("qrCode"), as
 
     const filePath = `/uploads/payment_qr/${req.file.filename}`;
 
-    await db.execute(
+    await db.query(
       `UPDATE payment_settings
-       SET qr_code_path = ?, updated_at = NOW()
+       SET qr_code_path = $1, updated_at = NOW()
        WHERE id = 1`,
       [filePath]
     );
@@ -1224,7 +1227,7 @@ app.delete("/api/admin/payment/qr", authenticateToken, async (req, res) => {
 app.get("/api/payment/qr", authenticateToken, async (req, res) => {
   try {
     // Fetch QR code path from database
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       "SELECT qr_code_path, upi_id, upi_name FROM payment_settings WHERE id = 1"
     );
 
@@ -1259,10 +1262,10 @@ app.post("/api/payment/submit", authenticateToken, async (req, res) => {
     const paymentId = uuidv4();
 
     // Insert payment record
-    await db.execute(
+    await db.query(
       `
       INSERT INTO payments (id, user_id, amount, transaction_id, payment_method, billing_month, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, 'pending', NOW())
       `,
       [paymentId, userId, amount, transactionId, paymentMethod, billingMonth || null]
     );
@@ -1290,18 +1293,18 @@ app.get("/api/payment/status", authenticateToken, async (req, res) => {
     let query = `
       SELECT id, amount, transaction_id, payment_method, billing_month, status, created_at
       FROM payments
-      WHERE user_id = ?
+      WHERE user_id = $1
     `;
     let params = [userId];
 
     if (billingMonth) {
-      query += " AND billing_month = ?";
+      query += " AND TO_CHAR(billing_month, 'YYYY-MM') = $2";
       params.push(billingMonth);
     }
 
     query += " ORDER BY created_at DESC";
 
-    const [rows] = await db.execute(query, params);
+    const { rows } = await db.query(query, params);
 
     res.json({ payments: rows });
 
@@ -1320,7 +1323,7 @@ app.get("/api/admin/payments", authenticateToken, async (req, res) => {
       return res.status(403).json({ error: "Admin access required" });
     }
 
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       `
       SELECT p.id, p.user_id, u.full_name, u.email, p.amount, p.transaction_id,
              p.payment_method, p.billing_month, p.status, p.created_at
@@ -1354,11 +1357,11 @@ app.post("/api/admin/payments/:id/status", authenticateToken, async (req, res) =
       return res.status(400).json({ error: "Invalid status" });
     }
 
-    await db.execute(
+    await db.query(
       `
       UPDATE payments
-      SET status = ?, updated_at = NOW()
-      WHERE id = ?
+      SET status = $1, updated_at = NOW()
+      WHERE id = $2
       `,
       [status, id]
     );
@@ -1389,19 +1392,19 @@ app.get("/api/admin/waste", authenticateToken, async (req, res) => {
     let params = [];
 
     if (startDate && endDate) {
-      query += " WHERE meal_date BETWEEN ? AND ?";
+      query += " WHERE meal_date BETWEEN $1 AND $2";
       params = [startDate, endDate];
     }
 
     if (mealType && mealType !== 'all') {
       query += params.length ? " AND" : " WHERE";
-      query += " meal_type = ?";
+      query += " meal_type = $" + (params.length + 1);
       params.push(mealType);
     }
 
     query += " ORDER BY meal_date DESC, meal_type ASC";
 
-    const [rows] = await db.execute(query, params);
+    const { rows } = await db.query(query, params);
 
     res.json(rows);
 
@@ -1433,8 +1436,8 @@ app.post("/api/admin/waste", authenticateToken, async (req, res) => {
     }
 
     // Check if record already exists
-    const [existing] = await db.execute(
-      'SELECT id FROM waste_records WHERE meal_date = ? AND meal_type = ?',
+    const { rows: existing } = await db.query(
+      'SELECT id FROM waste_records WHERE meal_date = $1 AND meal_type = $2',
       [meal_date, meal_type]
     );
 
@@ -1442,22 +1445,24 @@ app.post("/api/admin/waste", authenticateToken, async (req, res) => {
       return res.status(409).json({ error: 'Record already exists for this date and meal type' });
     }
 
-    // Insert new record with ON DUPLICATE KEY UPDATE
-    const [result] = await db.execute(
+    // Insert new record with ON CONFLICT DO UPDATE
+    const { rows: resultRows } = await db.query(
       `INSERT INTO waste_records (meal_date, meal_type, total_served, total_consumed, waste_amount, waste_percentage, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         total_served = VALUES(total_served),
-         total_consumed = VALUES(total_consumed),
-         waste_amount = VALUES(waste_amount),
-         waste_percentage = VALUES(waste_percentage),
-         notes = VALUES(notes),
-         updated_at = CURRENT_TIMESTAMP`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (meal_date, meal_type)
+       DO UPDATE SET
+         total_served = EXCLUDED.total_served,
+         total_consumed = EXCLUDED.total_consumed,
+         waste_amount = EXCLUDED.waste_amount,
+         waste_percentage = EXCLUDED.waste_percentage,
+         notes = EXCLUDED.notes,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING id`,
       [meal_date, meal_type, total_served, total_consumed, waste_amount || 0, waste_percentage || 0, notes || '']
     );
 
     res.status(201).json({
-      id: result.insertId,
+      id: resultRows[0].id,
       message: 'Waste record added successfully'
     });
   } catch (error) {
