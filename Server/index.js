@@ -342,10 +342,22 @@ app.get("/api/attendance/summary", authenticateToken, async (req, res) => {
 // ==================================================
 app.get("/api/billing/summary", authenticateToken, async (req, res) => {
   try {
-    const { start, end } = req.query;
+    const { date, start, end } = req.query;
 
-    if (!start || !end)
-      return res.status(400).json({ error: "Start and end dates required" });
+    let startDate, endDate;
+
+    if (date) {
+      // Calculate month start and end from date
+      const monthStart = new Date(date + '-01');
+      const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0);
+      startDate = monthStart.toISOString().slice(0, 10);
+      endDate = monthEnd.toISOString().slice(0, 10);
+    } else if (start && end) {
+      startDate = start;
+      endDate = end;
+    } else {
+      return res.status(400).json({ error: "Date or start/end dates required" });
+    }
 
     // Get attendance counts
     const { rows: attendanceRows } = await db.query(
@@ -356,7 +368,7 @@ app.get("/api/billing/summary", authenticateToken, async (req, res) => {
       FROM attendance_logs
       WHERE user_id = $1 AND meal_date BETWEEN $2 AND $3
       `,
-      [req.user.id, start, end]
+      [req.user.id, startDate, endDate]
     );
 
     // Get approved leave days count
@@ -367,7 +379,7 @@ app.get("/api/billing/summary", authenticateToken, async (req, res) => {
       WHERE user_id = $1 AND status = 'approved'
       AND ((start_date BETWEEN $2 AND $3) OR (end_date BETWEEN $4 AND $5) OR (start_date <= $6 AND end_date >= $7))
       `,
-      [req.user.id, start, end, start, end, start, end]
+      [req.user.id, startDate, endDate, startDate, endDate, startDate, endDate]
     );
 
     const attended = attendanceRows[0]?.attended || 0;
@@ -385,7 +397,7 @@ app.get("/api/billing/summary", authenticateToken, async (req, res) => {
       WHERE user_id = $1 AND meal_date BETWEEN $2 AND $3
       AND status IN ('will_attend', 'consumed')
       `,
-      [req.user.id, start, end]
+      [req.user.id, startDate, endDate]
     );
 
     const estimatedAmount =
@@ -672,6 +684,37 @@ app.get("/api/admin/users", authenticateToken, async (req, res) => {
 });
 
 // ==================================================
+// ADMIN — GET SINGLE USER
+// ==================================================
+app.get("/api/admin/users/:id", authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== "admin")
+      return res.status(403).json({ error: "Admin access required" });
+
+    const { id } = req.params;
+
+    const { rows } = await db.query(
+      `
+      SELECT id,email,full_name,role,mobile_number,mess_status,total_amount,created_at,updated_at
+      FROM users
+      WHERE id = $1
+      `,
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    res.json({ user: rows[0] });
+
+  } catch (err) {
+    console.error("Admin get user error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ==================================================
 // ADMIN — UPDATE USER
 // ==================================================
 app.put("/api/admin/users/:id", authenticateToken, async (req, res) => {
@@ -877,6 +920,90 @@ app.get("/api/admin/reports/daily", authenticateToken, async (req, res) => {
     if (req.user.role !== "admin")
       return res.status(403).json({ error: "Admin access required" });
 
+    const { date } = req.query;
+    if (!date) return res.status(400).json({ error: "Date parameter required" });
+
+    // Get attendance data for the date
+    const { rows: attendanceRows } = await db.query(
+      `
+      SELECT meal_type, status, COUNT(*) as count
+      FROM attendance_logs
+      WHERE meal_date = $1
+      GROUP BY meal_type, status
+      `,
+      [date]
+    );
+
+    // Aggregate attendance per meal type
+    const attendanceMap = {};
+    attendanceRows.forEach(row => {
+      if (!attendanceMap[row.meal_type]) {
+        attendanceMap[row.meal_type] = { total: 0, will_attend: 0, consumed: 0, not_attended: 0 };
+      }
+      attendanceMap[row.meal_type][row.status] = row.count;
+      attendanceMap[row.meal_type].total += row.count;
+    });
+
+    const attendance = ['breakfast', 'lunch', 'dinner'].map(mealType => ({
+      meal_type: mealType,
+      total: attendanceMap[mealType]?.total || 0,
+      will_attend: attendanceMap[mealType]?.will_attend || 0,
+      consumed: attendanceMap[mealType]?.consumed || 0,
+      not_attended: attendanceMap[mealType]?.not_attended || 0
+    }));
+
+    // Get billing summary for the date
+    const { rows: billingRows } = await db.query(
+      `
+      SELECT
+        COUNT(u.id) as total_students,
+        SUM(COALESCE(b.total_meals, 0)) as total_meals,
+        SUM(COALESCE(b.total_amount, 0)) as total_amount,
+        SUM(CASE WHEN COALESCE(b.is_paid, 0) = 1 THEN 1 ELSE 0 END) as paid_count
+      FROM users u
+      LEFT JOIN billing_records b
+        ON b.user_id = u.id
+        AND TO_CHAR(b.billing_month, 'YYYY-MM') = TO_CHAR($1, 'YYYY-MM')
+      WHERE u.role = 'student'
+      `,
+      [date]
+    );
+
+    const billing = billingRows[0] || { total_students: 0, total_meals: 0, total_amount: 0, paid_count: 0 };
+
+    // Get leave count for the date
+    const { rows: leaveRows } = await db.query(
+      `
+      SELECT COUNT(*) as leaves
+      FROM leave_requests
+      WHERE status = 'approved'
+      AND $1 BETWEEN start_date AND end_date
+      `,
+      [date]
+    );
+
+    const leaves = leaveRows[0]?.leaves || 0;
+
+    res.json({
+      report: {
+        date,
+        attendance,
+        billing,
+        leaves
+      }
+    });
+
+  } catch (err) {
+    console.error("Daily report API error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// =====================================================
+// STUDENT — DAILY REPORT (alias for frontend compatibility)
+// =====================================================
+app.get("/api/reports/daily", authenticateToken, async (req, res) => {
+  try {
     const { date } = req.query;
     if (!date) return res.status(400).json({ error: "Date parameter required" });
 
@@ -1471,10 +1598,16 @@ app.post("/api/admin/waste", authenticateToken, async (req, res) => {
   }
 });
 
+// Initialize database before starting server
+initDatabase().then(() => {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () =>
+    console.log(`Server running on port ${PORT}`)
+  );
+}).catch((error) => {
+  console.error('Failed to initialize database:', error);
+  process.exit(1);
+});
+
 // --------------------------------------------------
 app.get("/", (req, res) => res.send("API running"));
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () =>
-  console.log(`Server running on port ${PORT}`)
-);
