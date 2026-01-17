@@ -1174,8 +1174,9 @@ app.post("/api/admin/leaves/:id/status", authenticateToken, async (req, res) => 
     const { id } = req.params;
     const { status } = req.body;
 
-    if (!['approved', 'reject'].includes(status))
-      return res.status(400).json({ error: "Status must be 'approved' or 'reject'" });
+    if (!['approved', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: "Status must be 'approved' or 'rejected'" });
+    }
 
     // Update leave status
     await db.query(
