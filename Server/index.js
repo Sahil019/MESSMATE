@@ -858,7 +858,8 @@ app.get("/api/admin/billing/summary", authenticateToken, async (req, res) => {
         COALESCE(b.dinner_count,0) AS dinner_count,
         COALESCE(b.total_meals,0) AS total_meals,
         COALESCE(b.total_amount,0) AS total_amount,
-        COALESCE(b.is_paid,0) AS is_paid,
+        COALESCE(b.is_paid, FALSE) AS is_paid,
+
 
         $1 AS billing_date
 
