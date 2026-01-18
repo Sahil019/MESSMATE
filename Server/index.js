@@ -888,23 +888,25 @@ app.post("/api/admin/billing/update-payment", authenticateToken, async (req, res
     if (req.user.role !== "admin")
       return res.status(403).json({ error: "Admin access required" });
 
-    const { user_id, billing_date, is_paid } = req.body;
+    const { billing_id, is_paid } = req.body;
 
-    if (!user_id || !billing_date || is_paid === undefined)
-      return res.status(400).json({ error: "user_id, billing_date, and is_paid are required" });
+    if (!billing_id || is_paid === undefined) {
+      return res.status(400).json({ error: "billing_id and is_paid are required" });
+    }
 
-    // Update the payment status
     await db.query(
       `
       UPDATE billing_records
       SET is_paid = $1, updated_at = NOW()
-      WHERE user_id = $2 AND TO_CHAR(billing_month, 'YYYY-MM') = TO_CHAR($3, 'YYYY-MM')
+      WHERE id = $2
       `,
-      [is_paid, user_id, billing_date]
+      [is_paid, billing_id]
     );
 
-    res.json({ success: true, message: is_paid ? "Successfully marked as paid" : "Marked as unpaid" });
-
+    res.json({
+      success: true,
+      message: is_paid ? "Marked as Paid" : "Marked as Unpaid"
+    });
   } catch (err) {
     console.error("Update payment status error:", err);
     res.status(500).json({ error: "Internal server error" });
