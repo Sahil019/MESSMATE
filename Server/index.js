@@ -1559,8 +1559,18 @@ app.get("/api/admin/waste", authenticateToken, async (req, res) => {
     const { startDate, endDate, mealType } = req.query;
 
     let query = `
-      SELECT id, meal_date, meal_type, total_served, total_consumed, waste_amount, waste_percentage, notes, created_at
-      FROM waste_records
+SELECT
+  id,
+  meal_date,
+  meal_type,
+  CONCAT(meal_date, ' ', meal_type) AS label,
+  total_served,
+  total_consumed,
+  waste_amount,
+  waste_percentage,
+  notes,
+  created_at
+FROM waste_records
     `;
     let params = [];
 
