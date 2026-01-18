@@ -1087,7 +1087,7 @@ app.get("/api/reports/daily", authenticateToken, async (req, res) => {
         COUNT(u.id) as total_students,
         SUM(COALESCE(b.total_meals, 0)) as total_meals,
         SUM(COALESCE(b.total_amount, 0)) as total_amount,
-        SUM(CASE WHEN COALESCE(b.is_paid, 0) = 1 THEN 1 ELSE 0 END) as paid_count
+        SUM(CASE WHEN b.is_paid IS TRUE THEN 1 ELSE 0 END) as paid_count
       FROM users u
       LEFT JOIN billing_records b
         ON b.user_id = u.id
