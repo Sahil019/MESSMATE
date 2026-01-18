@@ -978,11 +978,15 @@ app.get("/api/admin/reports/daily", authenticateToken, async (req, res) => {
         COUNT(DISTINCT u.id) as total_students,
         COALESCE(SUM(b.total_meals), 0) as total_meals,
         COALESCE(SUM(b.total_amount), 0) as total_amount,
-        COALESCE(SUM(CASE WHEN b.is_paid = true OR b.is_paid = 1 THEN 1 ELSE 0 END), 0) as paid_count
+        COALESCE(
+          SUM(CASE WHEN b.is_paid = true THEN 1 ELSE 0 END),
+          0
+        ) as paid_count
       FROM users u
       LEFT JOIN billing_records b
         ON b.user_id = u.id
-        AND TO_CHAR(b.billing_month, 'YYYY-MM') = TO_CHAR(CAST($1 AS DATE), 'YYYY-MM')
+        AND TO_CHAR(b.billing_month, 'YYYY-MM')
+            = TO_CHAR(CAST($1 AS DATE), 'YYYY-MM')
       WHERE u.role = 'student'
       `,
       [date]
