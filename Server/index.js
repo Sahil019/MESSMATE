@@ -923,79 +923,57 @@ app.get("/api/admin/reports/daily", authenticateToken, async (req, res) => {
     const { date } = req.query;
     if (!date) return res.status(400).json({ error: "Date parameter required" });
 
-    // Get attendance data for the date
-    const { rows: attendanceRows } = await db.query(
-      `
-      SELECT meal_type, status, COUNT(*) as count
-      FROM attendance_logs
-      WHERE meal_date = $1
-      GROUP BY meal_type, status
-      `,
-      [date]
-    );
-
-    // Aggregate attendance per meal type
-    const attendanceMap = {};
-    attendanceRows.forEach(row => {
-      if (!attendanceMap[row.meal_type]) {
-        attendanceMap[row.meal_type] = { total: 0, will_attend: 0, consumed: 0, not_attended: 0 };
-      }
-      attendanceMap[row.meal_type][row.status] = row.count;
-      attendanceMap[row.meal_type].total += row.count;
-    });
-
-    const attendance = ['breakfast', 'lunch', 'dinner'].map(mealType => ({
-      meal_type: mealType,
-      total: attendanceMap[mealType]?.total || 0,
-      will_attend: attendanceMap[mealType]?.will_attend || 0,
-      consumed: attendanceMap[mealType]?.consumed || 0,
-      not_attended: attendanceMap[mealType]?.not_attended || 0
-    }));
-
-    // Get billing summary for the date
-    const { rows: billingRows } = await db.query(
+    // 1. Attendance counts
+    const attendanceResult = await db.query(
       `
       SELECT
-        COUNT(u.id) as total_students,
-        SUM(COALESCE(b.total_meals, 0)) as total_meals,
-        SUM(COALESCE(b.total_amount, 0)) as total_amount,
-        SUM(CASE WHEN COALESCE(b.is_paid, 0) = 1 THEN 1 ELSE 0 END) as paid_count
-      FROM users u
-      LEFT JOIN billing_records b
-        ON b.user_id = u.id
-        AND TO_CHAR(b.billing_month, 'YYYY-MM') = TO_CHAR($1, 'YYYY-MM')
-      WHERE u.role = 'student'
+        meal_type,
+        COUNT(*) AS count
+      FROM attendance_logs
+      WHERE meal_date = $1
+      GROUP BY meal_type
       `,
       [date]
     );
 
-    const billing = billingRows[0] || { total_students: 0, total_meals: 0, total_amount: 0, paid_count: 0 };
-
-    // Get leave count for the date
-    const { rows: leaveRows } = await db.query(
+    // 2. Leave counts
+    const leaveResult = await db.query(
       `
-      SELECT COUNT(*) as leaves
+      SELECT
+        status,
+        COUNT(*) AS count
       FROM leave_requests
-      WHERE status = 'approved'
-      AND $1 BETWEEN start_date AND end_date
+      WHERE $1 BETWEEN start_date AND end_date
+      GROUP BY status
       `,
       [date]
     );
 
-    const leaves = leaveRows[0]?.leaves || 0;
+    // 3. Billing summary
+    const billingResult = await db.query(
+      `
+      SELECT
+        COALESCE(SUM(total_amount), 0) AS total_amount,
+        COALESCE(SUM(total_meals), 0) AS total_meals
+      FROM billing_records
+      WHERE billing_month = DATE_TRUNC('month', $1::date)
+      `,
+      [date]
+    );
 
     res.json({
-      report: {
-        date,
-        attendance,
-        billing,
-        leaves
-      }
+      attendance: attendanceResult.rows,
+      leaves: leaveResult.rows,
+      billing: billingResult.rows[0] || {
+        total_amount: 0,
+        total_meals: 0,
+      },
     });
-
   } catch (err) {
-    console.error("Daily report API error:", err);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Daily report error:", err);
+    res.status(500).json({
+      message: "Failed to generate daily report",
+    });
   }
 });
 
@@ -1222,7 +1200,7 @@ app.post("/api/admin/leaves/:id/status", authenticateToken, async (req, res) => 
         }
 
         // Recalculate billing for affected months
-        // This is a simplified recalc; in production, you might want to batch this
+        // This is a simplified recalculation in production, you might want to batch this
         const billingMonths = new Set();
         for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
           billingMonths.add(d.toISOString().slice(0, 7) + '-01'); // First day of month
