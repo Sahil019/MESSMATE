@@ -918,10 +918,14 @@ app.post("/api/admin/billing/update-payment", authenticateToken, async (req, res
 app.get("/api/admin/reports/daily", authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== "admin")
-      return res.status(403).json({ error: "Admin access required" });
+      return res.status(403).json({ success: false, error: "Admin access required" });
 
     const { date } = req.query;
-    if (!date) return res.status(400).json({ error: "Date parameter required" });
+    if (!date) {
+      return res.status(400).json({ success: false, error: "Date parameter required" });
+    }
+
+    console.log('Fetching daily report for date:', date);
 
     // Get attendance data for the date
     const { rows: attendanceRows } = await db.query(
@@ -934,27 +938,26 @@ app.get("/api/admin/reports/daily", authenticateToken, async (req, res) => {
       [date]
     );
 
+    console.log('Attendance rows:', attendanceRows);
+
     // Aggregate attendance per meal type
     const attendanceMap = {};
     attendanceRows.forEach(row => {
       if (!attendanceMap[row.meal_type]) {
-        attendanceMap[row.meal_type] = { 
-          total: 0, 
-          will_attend: 0, 
-          consumed: 0, 
+        attendanceMap[row.meal_type] = {
+          total: 0,
+          will_attend: 0,
+          consumed: 0,
           not_attended: 0,
-          attended: 0 // Add this
+          skip: 0
         };
       }
-      
+
       const count = parseInt(row.count) || 0;
-      attendanceMap[row.meal_type][row.status] = count;
+      const status = row.status || 'not_set';
+
+      attendanceMap[row.meal_type][status] = count;
       attendanceMap[row.meal_type].total += count;
-      
-      // Calculate attended (will_attend + consumed)
-      if (row.status === 'will_attend' || row.status === 'consumed') {
-        attendanceMap[row.meal_type].attended += count;
-      }
     });
 
     const attendance = ['breakfast', 'lunch', 'dinner'].map(mealType => ({
@@ -962,61 +965,76 @@ app.get("/api/admin/reports/daily", authenticateToken, async (req, res) => {
       total: attendanceMap[mealType]?.total || 0,
       will_attend: attendanceMap[mealType]?.will_attend || 0,
       consumed: attendanceMap[mealType]?.consumed || 0,
-      attended: attendanceMap[mealType]?.attended || 0,
-      not_attended: attendanceMap[mealType]?.not_attended || 0
+      not_attended: attendanceMap[mealType]?.not_attended || 0,
+      skip: attendanceMap[mealType]?.skip || 0
     }));
+
+    console.log('Processed attendance:', attendance);
 
     // Get billing summary for the month
     const { rows: billingRows } = await db.query(
       `
       SELECT
         COUNT(DISTINCT u.id) as total_students,
-        SUM(COALESCE(b.total_meals, 0)) as total_meals,
-        SUM(COALESCE(b.total_amount, 0)) as total_amount,
-        SUM(CASE WHEN COALESCE(b.is_paid, 0) = 1 THEN 1 ELSE 0 END) as paid_count
+        COALESCE(SUM(b.total_meals), 0) as total_meals,
+        COALESCE(SUM(b.total_amount), 0) as total_amount,
+        COALESCE(SUM(CASE WHEN b.is_paid = true OR b.is_paid = 1 THEN 1 ELSE 0 END), 0) as paid_count
       FROM users u
       LEFT JOIN billing_records b
         ON b.user_id = u.id
-        AND TO_CHAR(b.billing_month, 'YYYY-MM') = TO_CHAR($1::date, 'YYYY-MM')
+        AND DATE_TRUNC('month', b.billing_month) = DATE_TRUNC('month', $1::date)
       WHERE u.role = 'student'
       `,
       [date]
     );
 
-    const billing = billingRows[0] || { 
-      total_students: 0, 
-      total_meals: 0, 
-      total_amount: 0, 
-      paid_count: 0 
+    console.log('Billing rows:', billingRows);
+
+    const billing = {
+      total_students: parseInt(billingRows[0]?.total_students) || 0,
+      total_meals: parseInt(billingRows[0]?.total_meals) || 0,
+      total_amount: parseFloat(billingRows[0]?.total_amount) || 0,
+      paid_count: parseInt(billingRows[0]?.paid_count) || 0
     };
 
     // Get leave count for the date
     const { rows: leaveRows } = await db.query(
       `
-      SELECT lr.id, u.full_name
-      FROM leave_requests lr
-      JOIN users u ON u.id = lr.user_id
-      WHERE lr.status = 'approved'
-      AND $1 BETWEEN lr.start_date AND lr.end_date
+      SELECT COUNT(*) as leave_count
+      FROM leave_requests
+      WHERE status = 'approved'
+      AND $1::date >= start_date
+      AND $1::date <= end_date
       `,
       [date]
     );
 
-    res.json({
+    console.log('Leave rows:', leaveRows);
+
+    const leaves = parseInt(leaveRows[0]?.leave_count) || 0;
+
+    const response = {
       success: true,
       report: {
         date,
         attendance,
         billing,
-        leaves: leaveRows.length
+        leaves
       }
-    });
+    };
+
+    console.log('Sending response:', JSON.stringify(response, null, 2));
+
+    res.json(response);
 
   } catch (err) {
     console.error("Daily report API error:", err);
-    res.status(500).json({ 
+    console.error("Error stack:", err.stack);
+
+    res.status(500).json({
       success: false,
-      error: "Internal server error" 
+      error: "Internal server error",
+      message: err.message
     });
   }
 });
