@@ -982,7 +982,7 @@ app.get("/api/admin/reports/daily", authenticateToken, async (req, res) => {
       FROM users u
       LEFT JOIN billing_records b
         ON b.user_id = u.id
-        AND DATE_TRUNC('month', b.billing_month) = DATE_TRUNC('month', $1::date)
+        AND TO_CHAR(b.billing_month, 'YYYY-MM') = TO_CHAR(CAST($1 AS DATE), 'YYYY-MM')
       WHERE u.role = 'student'
       `,
       [date]
