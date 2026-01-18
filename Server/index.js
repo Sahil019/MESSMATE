@@ -913,7 +913,7 @@ app.post("/api/admin/billing/update-payment", authenticateToken, async (req, res
 });
 
 // =====================================================
-// ADMIN — DAILY REPORT
+// ADMIN – DAILY REPORT
 // =====================================================
 app.get("/api/admin/reports/daily", authenticateToken, async (req, res) => {
   try {
@@ -923,56 +923,100 @@ app.get("/api/admin/reports/daily", authenticateToken, async (req, res) => {
     const { date } = req.query;
     if (!date) return res.status(400).json({ error: "Date parameter required" });
 
-    // 1. Attendance counts
-    const attendanceResult = await db.query(
+    // Get attendance data for the date
+    const { rows: attendanceRows } = await db.query(
       `
-      SELECT
-        meal_type,
-        COUNT(*) AS count
+      SELECT meal_type, status, COUNT(*) as count
       FROM attendance_logs
       WHERE meal_date = $1
-      GROUP BY meal_type
+      GROUP BY meal_type, status
       `,
       [date]
     );
 
-    // 2. Leave counts
-    const leaveResult = await db.query(
+    // Aggregate attendance per meal type
+    const attendanceMap = {};
+    attendanceRows.forEach(row => {
+      if (!attendanceMap[row.meal_type]) {
+        attendanceMap[row.meal_type] = { 
+          total: 0, 
+          will_attend: 0, 
+          consumed: 0, 
+          not_attended: 0,
+          attended: 0 // Add this
+        };
+      }
+      
+      const count = parseInt(row.count) || 0;
+      attendanceMap[row.meal_type][row.status] = count;
+      attendanceMap[row.meal_type].total += count;
+      
+      // Calculate attended (will_attend + consumed)
+      if (row.status === 'will_attend' || row.status === 'consumed') {
+        attendanceMap[row.meal_type].attended += count;
+      }
+    });
+
+    const attendance = ['breakfast', 'lunch', 'dinner'].map(mealType => ({
+      meal_type: mealType,
+      total: attendanceMap[mealType]?.total || 0,
+      will_attend: attendanceMap[mealType]?.will_attend || 0,
+      consumed: attendanceMap[mealType]?.consumed || 0,
+      attended: attendanceMap[mealType]?.attended || 0,
+      not_attended: attendanceMap[mealType]?.not_attended || 0
+    }));
+
+    // Get billing summary for the month
+    const { rows: billingRows } = await db.query(
       `
       SELECT
-        status,
-        COUNT(*) AS count
-      FROM leave_requests
-      WHERE $1 BETWEEN start_date AND end_date
-      GROUP BY status
+        COUNT(DISTINCT u.id) as total_students,
+        SUM(COALESCE(b.total_meals, 0)) as total_meals,
+        SUM(COALESCE(b.total_amount, 0)) as total_amount,
+        SUM(CASE WHEN COALESCE(b.is_paid, 0) = 1 THEN 1 ELSE 0 END) as paid_count
+      FROM users u
+      LEFT JOIN billing_records b
+        ON b.user_id = u.id
+        AND TO_CHAR(b.billing_month, 'YYYY-MM') = TO_CHAR($1::date, 'YYYY-MM')
+      WHERE u.role = 'student'
       `,
       [date]
     );
 
-    // 3. Billing summary
-    const billingResult = await db.query(
+    const billing = billingRows[0] || { 
+      total_students: 0, 
+      total_meals: 0, 
+      total_amount: 0, 
+      paid_count: 0 
+    };
+
+    // Get leave count for the date
+    const { rows: leaveRows } = await db.query(
       `
-      SELECT
-        COALESCE(SUM(total_amount), 0) AS total_amount,
-        COALESCE(SUM(total_meals), 0) AS total_meals
-      FROM billing_records
-      WHERE billing_month = DATE_TRUNC('month', $1::date)
+      SELECT lr.id, u.full_name
+      FROM leave_requests lr
+      JOIN users u ON u.id = lr.user_id
+      WHERE lr.status = 'approved'
+      AND $1 BETWEEN lr.start_date AND lr.end_date
       `,
       [date]
     );
 
     res.json({
-      attendance: attendanceResult.rows,
-      leaves: leaveResult.rows,
-      billing: billingResult.rows[0] || {
-        total_amount: 0,
-        total_meals: 0,
-      },
+      success: true,
+      report: {
+        date,
+        attendance,
+        billing,
+        leaves: leaveRows.length
+      }
     });
+
   } catch (err) {
-    console.error("Daily report error:", err);
-    res.status(500).json({
-      message: "Failed to generate daily report",
+    console.error("Daily report API error:", err);
+    res.status(500).json({ 
+      success: false,
+      error: "Internal server error" 
     });
   }
 });
