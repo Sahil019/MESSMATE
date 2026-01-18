@@ -841,44 +841,42 @@ app.get("/api/admin/billing/summary", authenticateToken, async (req, res) => {
     if (req.user.role !== "admin")
       return res.status(403).json({ error: "Admin access required" });
 
-    const { date } = req.query;
-    const dateKey = date || new Date().toISOString().slice(0, 10); // Default to current date if not provided
+    const date = req.query.date;
+
+    if (!date) {
+      return res.status(400).json({ error: "date query param is required" });
+    }
 
     const { rows } = await db.query(
       `
       SELECT
+        b.id AS billing_id,
         u.id AS user_id,
         u.full_name,
-        u.email,
-        u.mess_status,
-
-        b.id AS billing_id,
-        COALESCE(b.breakfast_count,0) AS breakfast_count,
-        COALESCE(b.lunch_count,0) AS lunch_count,
-        COALESCE(b.dinner_count,0) AS dinner_count,
-        COALESCE(b.total_meals,0) AS total_meals,
-        COALESCE(b.total_amount,0) AS total_amount,
-        COALESCE(b.is_paid, FALSE) AS is_paid,
-
-
-        $1 AS billing_date
-
+        b.billing_month AS billing_date,
+        b.breakfast_count,
+        b.lunch_count,
+        b.dinner_count,
+        b.total_meals,
+        b.total_amount,
+        b.is_paid
       FROM users u
       LEFT JOIN billing_records b
         ON b.user_id = u.id
-        AND TO_CHAR(b.billing_month, 'YYYY-MM') = TO_CHAR($2, 'YYYY-MM')
-
+        AND TO_CHAR(b.billing_month, 'YYYY-MM')
+            = TO_CHAR(CAST($1 AS DATE), 'YYYY-MM')
       WHERE u.role = 'student'
-      ORDER BY u.full_name ASC
-    `,
-      [dateKey, dateKey]
+      ORDER BY u.full_name
+      `,
+      [date]
     );
 
-    res.json({ records: rows });
-
-  } catch (err) {
-    console.error("Billing summary API error:", err);
-    res.status(500).json({ error: "Internal server error" });
+    return res.json({ records: rows });
+  } catch (error) {
+    console.error("Admin billing summary error:", error);
+    return res.status(500).json({
+      error: "Failed to fetch billing summary"
+    });
   }
 });
 
