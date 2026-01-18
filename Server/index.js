@@ -1589,7 +1589,8 @@ FROM waste_records
 
     const { rows } = await db.query(query, params);
 
-    res.json(rows);
+    res.json({ records: rows });
+
 
   } catch (err) {
     console.error("Get waste records error:", err);
