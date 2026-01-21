@@ -191,28 +191,46 @@ app.get("/api/auth/me", authenticateToken, async (req, res) => {
 
 
 // ==================================================
-// GET ATTENDANCE (student)
+// GET ATTENDANCE (student + admin) - FIXED
 // ==================================================
 app.get("/api/attendance", authenticateToken, async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate, user_id } = req.query;
+
+    // If user_id is provided (admin fetching for specific user), use it
+    // Otherwise use the authenticated user's ID
+    const userId = user_id || req.user.id;
 
     const { rows } = await db.query(
-      `
-      SELECT meal_date, meal_type, status, is_locked
+      `SELECT 
+        id,
+        user_id,
+        meal_date, 
+        meal_type, 
+        status, 
+        is_locked,
+        created_at,
+        updated_at
       FROM attendance_logs
       WHERE user_id = $1
       AND meal_date BETWEEN $2 AND $3
-      ORDER BY meal_date ASC
-      `,
-      [req.user.id, startDate, endDate]
+      ORDER BY meal_date ASC, meal_type ASC`,
+      [userId, startDate, endDate]
     );
 
-    res.json({ attendance: rows });
+    console.log(`Fetched ${rows.length} attendance records for user ${userId}`);
+
+    res.json({ 
+      success: true,
+      attendance: rows 
+    });
 
   } catch (err) {
     console.error("Fetch attendance error:", err);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ 
+      success: false,
+      error: "Internal server error" 
+    });
   }
 });
 
@@ -834,48 +852,94 @@ app.get("/api/admin/billing", authenticateToken, async (req, res) => {
 });
 
 // =====================================================
-// ADMIN — BILLING SUMMARY (MATCH BY DATE)
+// ADMIN – BILLING SUMMARY (MATCH BY DATE) - FIXED
 // =====================================================
 app.get("/api/admin/billing/summary", authenticateToken, async (req, res) => {
   try {
-    if (req.user.role !== "admin")
+    if (req.user.role !== "admin") {
       return res.status(403).json({ error: "Admin access required" });
+    }
 
-    const date = req.query.date;
+    const { date } = req.query;
 
     if (!date) {
       return res.status(400).json({ error: "date query param is required" });
     }
 
-    const { rows } = await db.query(
-      `
-      SELECT
-        b.id AS billing_id,
-        u.id AS user_id,
-        u.full_name,
-        b.billing_month AS billing_date,
-        b.breakfast_count,
-        b.lunch_count,
-        b.dinner_count,
-        b.total_meals,
-        b.total_amount,
-        b.is_paid
-      FROM users u
-      LEFT JOIN billing_records b
-        ON b.user_id = u.id
-        AND TO_CHAR(b.billing_month, 'YYYY-MM')
-            = TO_CHAR(CAST($1 AS DATE), 'YYYY-MM')
-      WHERE u.role = 'student'
-      ORDER BY u.full_name
-      `,
-      [date]
+    console.log('📊 Fetching billing summary for month:', date);
+
+    // Get all students
+    const { rows: studentRows } = await db.query(
+      `SELECT id, full_name, email, mess_status
+       FROM users
+       WHERE role = 'student'
+       ORDER BY full_name ASC`
     );
 
-    return res.json({ records: rows });
+    console.log(`Found ${studentRows.length} students`);
+
+    // For each student, calculate their meals for the selected month
+    const records = [];
+
+    for (const student of studentRows) {
+      // Get attendance counts for this month
+      const { rows: attendanceRows } = await db.query(
+        `SELECT
+          COUNT(CASE WHEN meal_type = 'breakfast' AND status IN ('will_attend', 'consumed') THEN 1 END)::integer as breakfast_count,
+          COUNT(CASE WHEN meal_type = 'lunch' AND status IN ('will_attend', 'consumed') THEN 1 END)::integer as lunch_count,
+          COUNT(CASE WHEN meal_type = 'dinner' AND status IN ('will_attend', 'consumed') THEN 1 END)::integer as dinner_count
+         FROM attendance_logs
+         WHERE user_id = $1
+         AND TO_CHAR(meal_date, 'YYYY-MM') = TO_CHAR($2::date, 'YYYY-MM')`,
+        [student.id, date]
+      );
+
+      const breakfast = attendanceRows[0]?.breakfast_count || 0;
+      const lunch = attendanceRows[0]?.lunch_count || 0;
+      const dinner = attendanceRows[0]?.dinner_count || 0;
+      const totalMeals = breakfast + lunch + dinner;
+      const totalAmount = (breakfast * 30) + (lunch * 48) + (dinner * 42);
+
+      // Get billing record to check payment status
+      const { rows: billingRows } = await db.query(
+        `SELECT id, is_paid
+         FROM billing_records
+         WHERE user_id = $1
+         AND TO_CHAR(billing_month, 'YYYY-MM') = TO_CHAR($2::date, 'YYYY-MM')`,
+        [student.id, date]
+      );
+
+      const billingRecord = billingRows[0];
+
+      records.push({
+        user_id: student.id,
+        full_name: student.full_name,
+        email: student.email,
+        mess_status: student.mess_status,
+        billing_id: billingRecord?.id || null,
+        billing_date: date,
+        breakfast_count: breakfast,
+        lunch_count: lunch,
+        dinner_count: dinner,
+        total_meals: totalMeals,
+        total_amount: totalAmount,
+        is_paid: billingRecord?.is_paid || false
+      });
+    }
+
+    console.log(`✅ Processed ${records.length} billing records`);
+
+    res.json({ 
+      success: true,
+      records 
+    });
+
   } catch (error) {
-    console.error("Admin billing summary error:", error);
-    return res.status(500).json({
-      error: "Failed to fetch billing summary"
+    console.error("❌ Admin billing summary error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch billing summary",
+      message: error.message
     });
   }
 });
