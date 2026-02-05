@@ -1,4 +1,4 @@
-# MESSMATE
+# Messmate-Management-System
 🚀 Messmate — Smart Mess Management System
 
 Messmate is a full-stack, production-ready Mess Management System designed for hostels, colleges, and institutional dining facilities.
