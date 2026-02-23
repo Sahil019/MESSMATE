@@ -1,23 +1,6 @@
 -- PostgreSQL Schema for Neon DB
 
--- Create users table first (other tables depend on it)
-CREATE TABLE IF NOT EXISTS users (
-  id VARCHAR(36) PRIMARY KEY,
-  email VARCHAR(255) UNIQUE NOT NULL,
-  password_hash VARCHAR(255) NOT NULL,
-  full_name VARCHAR(255) NOT NULL,
-  role VARCHAR(20) NOT NULL CHECK (role IN ('student', 'admin')),
-  mobile_number VARCHAR(20),
-  mess_status VARCHAR(20) DEFAULT 'paid' CHECK (mess_status IN ('paid', 'half_paid', 'unpaid')),
-  selected_package VARCHAR(36),
-  package_amount DECIMAL(10,2) DEFAULT 0.00,
-  total_amount DECIMAL(10,2) DEFAULT 0.00,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (selected_package) REFERENCES meal_plans(id)
-);
-
--- Create meal_plans table
+-- Create meal_plans first (users.selected_package references it)
 CREATE TABLE IF NOT EXISTS meal_plans (
   id VARCHAR(36) PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
@@ -35,6 +18,22 @@ ON CONFLICT (id) DO UPDATE SET
   name = EXCLUDED.name,
   monthly_price = EXCLUDED.monthly_price;
 
+-- Create users table (no FK to meal_plans - app stores it as string)
+CREATE TABLE IF NOT EXISTS users (
+  id VARCHAR(36) PRIMARY KEY,
+  email VARCHAR(255) UNIQUE NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  full_name VARCHAR(255) NOT NULL,
+  role VARCHAR(20) NOT NULL CHECK (role IN ('student', 'admin')),
+  mobile_number VARCHAR(20),
+  mess_status VARCHAR(20) DEFAULT 'paid' CHECK (mess_status IN ('paid', 'half_paid', 'unpaid')),
+  selected_package VARCHAR(36),
+  package_amount DECIMAL(10,2) DEFAULT 0.00,
+  total_amount DECIMAL(10,2) DEFAULT 0.00,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Create leave_requests table
 CREATE TABLE IF NOT EXISTS leave_requests (
   id VARCHAR(36) PRIMARY KEY,
@@ -48,9 +47,9 @@ CREATE TABLE IF NOT EXISTS leave_requests (
 );
 
 -- Create indexes for leave_requests
-CREATE INDEX idx_leave_requests_user_id ON leave_requests(user_id);
-CREATE INDEX idx_leave_requests_status ON leave_requests(status);
-CREATE INDEX idx_leave_requests_dates ON leave_requests(start_date, end_date);
+CREATE INDEX IF NOT EXISTS idx_leave_requests_user_id ON leave_requests(user_id);
+CREATE INDEX IF NOT EXISTS idx_leave_requests_status ON leave_requests(status);
+CREATE INDEX IF NOT EXISTS idx_leave_requests_dates ON leave_requests(start_date, end_date);
 
 -- Create attendance_logs table
 CREATE TABLE IF NOT EXISTS attendance_logs (
@@ -94,9 +93,9 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 
 -- Create indexes for payments
-CREATE INDEX idx_payments_user_id ON payments(user_id);
-CREATE INDEX idx_payments_status ON payments(status);
-CREATE INDEX idx_payments_billing_month ON payments(billing_month);
+CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments(user_id);
+CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
+CREATE INDEX IF NOT EXISTS idx_payments_billing_month ON payments(billing_month);
 
 -- Create payment_settings table
 CREATE TABLE IF NOT EXISTS payment_settings (
@@ -128,5 +127,5 @@ CREATE TABLE IF NOT EXISTS waste_records (
 );
 
 -- Create indexes for waste_records
-CREATE INDEX idx_waste_records_date ON waste_records(meal_date);
-CREATE INDEX idx_waste_records_meal_type ON waste_records(meal_type);
+CREATE INDEX IF NOT EXISTS idx_waste_records_date ON waste_records(meal_date);
+CREATE INDEX IF NOT EXISTS idx_waste_records_meal_type ON waste_records(meal_type);
