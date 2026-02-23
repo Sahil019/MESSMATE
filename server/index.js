@@ -45,7 +45,7 @@ async function initDatabase() {
     console.log("✅ Database connection verified");
 
     // ✅ read schema
-    const schemaPath = path.join(process.cwd(), "server", "schema.sql");
+    const schemaPath = path.join(process.cwd(), "schema.sql");
     const schemaSQL = fs.readFileSync(schemaPath, "utf8");
 
     // ✅ split SQL into individual statements
