@@ -41,8 +41,13 @@ async function initDatabase() {
   try {
     console.log('Initializing database...');
 
-    // Read the schema file
-    const schema = fs.readFileSync('schema.sql', 'utf8');
+    // First, verify the database connection works
+    const connectionTest = await db.query('SELECT NOW() as current_time');
+    console.log('Database connection verified:', connectionTest.rows[0].current_time);
+
+    // Read the schema file from server directory
+    const schemaPath = path.join(process.cwd(), 'server', 'schema.sql');
+    const schema = fs.readFileSync(schemaPath, 'utf8');
 
     // Split the schema into individual statements
     const statements = schema
@@ -61,6 +66,7 @@ async function initDatabase() {
     console.log('Database initialized successfully!');
   } catch (error) {
     console.error('Error initializing database:', error);
+    throw error; // Re-throw to prevent server from starting with broken DB
   }
 }
 
