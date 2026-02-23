@@ -78,12 +78,25 @@ export const AuthProvider = ({ children }) => {
         return { error: data.error || "Login failed. Please try again." };
       }
 
+      // Validate that user data exists in response
+      if (!data.user) {
+        console.error("Login response missing user data:", data);
+        return { error: "Login failed. Invalid response from server." };
+      }
+
+      // Validate required user fields
+      if (!data.user.id || !data.user.email || !data.user.role) {
+        console.error("Login response missing required user fields:", data.user);
+        return { error: "Login failed. Incomplete user data from server." };
+      }
+
       localStorage.setItem("authToken", data.token);
       localStorage.setItem("authUser", JSON.stringify(data.user));
 
       setUser(data.user);
       return { user: data.user };
-    } catch {
+    } catch (err) {
+      console.error("Login error:", err);
       return { error: "Network error. Please check your connection and try again." };
     }
   };

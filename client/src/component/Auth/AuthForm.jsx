@@ -77,7 +77,17 @@ const AuthForm = () => {
         if (result.error) {
           toast({
             title: "Login Failed",
-            description: "Please enter valid details",
+            description: result.error,
+            variant: "destructive"
+          });
+          return;
+        }
+
+        // Validate user data exists
+        if (!result.user || !result.user.role) {
+          toast({
+            title: "Login Failed",
+            description: "Invalid response from server. Please try again.",
             variant: "destructive"
           });
           return;
