@@ -40,16 +40,24 @@ async function initDatabase() {
   try {
     console.log("Initializing database...");
 
-    // 1️⃣ Test Neon connection
+    // ✅ verify neon connection
     await db.query("SELECT NOW()");
     console.log("✅ Database connection verified");
 
-    // 2️⃣ Load schema file
+    // ✅ read schema
     const schemaPath = path.join(process.cwd(), "server", "schema.sql");
     const schemaSQL = fs.readFileSync(schemaPath, "utf8");
 
-    // 3️⃣ Execute schema using SAME connection
-    await db.query(schemaSQL);
+    // ✅ split SQL into individual statements
+    const statements = schemaSQL
+      .split(";")
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    // ✅ execute one by one using SAME connection
+    for (const stmt of statements) {
+      await db.query(stmt);
+    }
 
     console.log("✅ Database initialized successfully!");
   } catch (error) {
