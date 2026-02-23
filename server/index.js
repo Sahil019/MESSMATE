@@ -36,37 +36,25 @@ function authenticateToken(req, res, next) {
   });
 }
 
-// Database initialization function
 async function initDatabase() {
   try {
-    console.log('Initializing database...');
+    console.log("Initializing database...");
 
-    // First, verify the database connection works
-    const connectionTest = await db.query('SELECT NOW() as current_time');
-    console.log('Database connection verified:', connectionTest.rows[0].current_time);
+    // 1️⃣ Test Neon connection
+    await db.query("SELECT NOW()");
+    console.log("✅ Database connection verified");
 
-    // Read the schema file from server directory
-    const schemaPath = path.join(process.cwd(), 'server', 'schema.sql');
-    const schema = fs.readFileSync(schemaPath, 'utf8');
+    // 2️⃣ Load schema file
+    const schemaPath = path.join(process.cwd(), "server", "schema.sql");
+    const schemaSQL = fs.readFileSync(schemaPath, "utf8");
 
-    // Split the schema into individual statements
-    const statements = schema
-      .split(';')
-      .map(stmt => stmt.trim())
-      .filter(stmt => stmt.length > 0 && !stmt.startsWith('--'));
+    // 3️⃣ Execute schema using SAME connection
+    await db.query(schemaSQL);
 
-    // Execute each statement
-    for (const statement of statements) {
-      if (statement.trim()) {
-        console.log('Executing:', statement.substring(0, 50) + '...');
-        await db.query(statement);
-      }
-    }
-
-    console.log('Database initialized successfully!');
+    console.log("✅ Database initialized successfully!");
   } catch (error) {
-    console.error('Error initializing database:', error);
-    throw error; // Re-throw to prevent server from starting with broken DB
+    console.error("❌ Error initializing database:", error);
+    process.exit(1);
   }
 }
 
